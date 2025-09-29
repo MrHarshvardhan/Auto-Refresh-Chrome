@@ -1,82 +1,70 @@
-Perfect — I’ll give you two bookmarklets only (Start + Stop), and the Start one will show a clear on-page badge so you can always see when it’s running.
+Yes! We can absolutely do that.
+I’ll update the code so that:
+
+✅ It shows a transparent floating countdown label (bottom-right).
+
+✅ The countdown resets after every refresh (loop).
+
+✅ You can stop it anytime with the Stop bookmark (removes the label + cancels the loop).
+
+
+Here’s the final setup — just two bookmarklets.
 
 
 ---
 
-✅ Step 1 — Create the Start Bookmark
+🟢 1. Start Bookmark (with Transparent Countdown)
 
-1. Right-click your bookmarks bar → Add page…
-
-
-2. Name: Auto Refresh Start
+1. Create a bookmark called Auto Refresh Start.
 
 
-3. Paste this into the URL field (all in one line):
+2. Paste this entire code in the URL field (single line):
 
 
 
-javascript:(()=>{const MIN=2;const ID='_arHUD';if(document.getElementById(ID)){alert('Auto-refresh already running.');return;}localStorage.setItem('_autoRefreshInterval',MIN);localStorage.setItem('_autoRefreshNext',Date.now()+MIN*60000);const hud=document.createElement('div');hud.id=ID;hud.style.cssText='position:fixed;z-index:2147483647;bottom:12px;right:12px;padding:8px 12px;background:#000c;color:#fff;font:13px system-ui;border-radius:8px;display:flex;align-items:center;gap:8px';hud.innerHTML='<span id="_arTimer"></span>';document.body.appendChild(hud);function tick(){const left=localStorage.getItem('_autoRefreshNext')-Date.now();const el=document.getElementById('_arTimer');if(!el)return;if(left<=0){localStorage.setItem("_autoRefreshNext",Date.now()+MIN*60000);location.reload();}else{el.textContent="⟳ "+Math.ceil(left/1000)+"s";setTimeout(tick,500);}}tick();alert('Auto-refresh started. Every '+MIN+' min.');})();
-
-> Change MIN=2 to another number if you want a different interval (in minutes).
-
-
+javascript:(()=>{const MIN=2;const ID='_arHUD';if(document.getElementById(ID)){alert('Auto-refresh already running.');return;}localStorage.setItem('_autoRefreshInterval',MIN);localStorage.setItem('_autoRefreshNext',Date.now()+MIN*60000);const hud=document.createElement('div');hud.id=ID;hud.style.cssText='position:fixed;z-index:2147483647;bottom:12px;right:12px;padding:6px 10px;background:rgba(0,0,0,0.5);color:#fff;font:14px monospace;border-radius:8px;backdrop-filter:blur(4px);';document.body.appendChild(hud);function tick(){const next=parseInt(localStorage.getItem('_autoRefreshNext'));const left=next-Date.now();if(!document.getElementById(ID))return;if(left<=0){localStorage.setItem('_autoRefreshNext',Date.now()+MIN*60000);location.reload();}else{hud.textContent='⟳ Refresh in '+Math.ceil(left/1000)+'s';setTimeout(tick,500);}}tick();alert('Auto-refresh started: every '+MIN+' min');})();
 
 
 ---
 
-✅ Step 2 — Create the Stop Bookmark
+🔴 2. Stop Bookmark
 
-1. Add another bookmark.
-
-
-2. Name: Auto Refresh Stop
+1. Create another bookmark called Auto Refresh Stop.
 
 
-3. Paste this into the URL field:
+2. Paste this code into the URL field:
 
 
 
-javascript:(()=>{localStorage.removeItem('_autoRefreshInterval');localStorage.removeItem('_autoRefreshNext');document.getElementById('_arHUD')?.remove();alert('Auto-refresh stopped.');})();
+javascript:(()=>{localStorage.removeItem('_autoRefreshInterval');localStorage.removeItem('_autoRefreshNext');document.getElementById('_arHUD')?.remove();alert('Auto-refresh stopped');})();
 
 
 ---
 
-✅ How to Use
+✅ How It Works
 
-1. Open the page you want to auto-refresh.
+Start: Click “Auto Refresh Start” →
 
+A small transparent label appears in the bottom-right corner showing a live countdown.
 
-2. Click Auto Refresh Start →
-
-You’ll see a floating badge bottom-right with a countdown (so you know it’s active).
-
-Page will reload every 2 minutes.
+When it hits 0, the page refreshes, and the timer restarts automatically (loop).
 
 
+Stop: Click “Auto Refresh Stop” →
 
-3. To stop at any time, click Auto Refresh Stop →
-
-Countdown badge disappears.
-
-You’ll see an alert confirming it stopped.
-
+The label disappears and refresh stops completely.
 
 
 
 
 ---
 
-✅ Why This Works
+🔧 Testing
 
-Visual feedback: Badge appears so you can confirm it started.
-
-Clear stop: Second bookmark removes badge + cancels timer.
-
-Persistent across reloads: Uses localStorage to remember the next refresh even after reload.
-
+For quick testing, you can change const MIN=2; to const MIN=0.1; (≈6 seconds) in the Start code to confirm it’s working before using the 2-minute interval.
 
 
 ---
 
-Do you want me to modify this so that Start bookmark also opens a tiny popup window (optional controller) when allowed — so you have both the badge and a popup to close?
+Would you like me to also make the countdown clickable so you can stop the auto-refresh by just clicking the timer (no separate Stop bookmark needed)?
 
