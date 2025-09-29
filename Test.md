@@ -1,20 +1,23 @@
+Absolutely—let’s give you a tiny Chrome extension with a proper Start / Pause / Resume / Stop and a Set time control. It shows a clear countdown badge on the page and persists across reloads (per tab).
+
+You’ll create 4 small files in a folder, then load it once.
+
 
 ---
 
-1) Create the extension files
+1) Files to create
 
-Make a new folder anywhere (e.g., AutoRefreshHUD/) and put these files inside:
+Create a folder, e.g. AutoRefreshPro/, and add these files:
 
 manifest.json
 
 {
   "manifest_version": 3,
-  "name": "Auto Refresh HUD",
-  "version": "1.0",
-  "description": "Auto-refresh the current tab with a visible countdown badge. Click the icon to start/stop.",
-  "permissions": ["scripting", "activeTab", "storage"],
-  "action": { "default_title": "Auto Refresh HUD (click to start/stop)" },
-  "background": { "service_worker": "bg.js" },
+  "name": "Auto Refresh Pro (HUD)",
+  "version": "1.1",
+  "description": "Auto-refresh with on-page HUD: set time, start, pause/resume, stop. Persists per tab.",
+  "permissions": ["activeTab", "storage"],
+  "action": { "default_popup": "popup.html", "default_title": "Auto Refresh Pro" },
   "content_scripts": [
     {
       "matches": ["<all_urls>"],
@@ -24,149 +27,233 @@ manifest.json
   ]
 }
 
-bg.js  (injects/starts the refresher when you click the toolbar icon)
+popup.html
 
-// Injects the toggle function into the current tab when the extension icon is clicked.
-chrome.action.onClicked.addListener(async (tab) => {
-  if (!tab.id) return;
-  await chrome.scripting.executeScript({
-    target: { tabId: tab.id },
-    func: toggleAutoRefresh
-  });
-});
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <style>
+      body { font: 14px system-ui, sans-serif; margin: 12px; min-width: 240px; }
+      .row { display:flex; gap:8px; align-items:center; margin:8px 0; }
+      input[type=number]{ width: 80px; padding:4px; }
+      button { padding:6px 10px; border-radius:8px; border:1px solid #ccc; background:#f6f6f6; cursor:pointer; }
+      button.primary { background:#0b57d0; color:#fff; border-color:#0b57d0; }
+      .muted{opacity:.75}
+    </style>
+  </head>
+  <body>
+    <div class="row">
+      <label for="minutes">Minutes:</label>
+      <input id="minutes" type="number" min="0.05" step="0.05" value="2">
+      <button id="set">Set</button>
+    </div>
+    <div class="row">
+      <button id="start" class="primary">Start</button>
+      <button id="pause">Pause</button>
+      <button id="resume">Resume</button>
+      <button id="stop">Stop</button>
+    </div>
+    <div id="status" class="muted">Status: —</div>
+    <script src="popup.js"></script>
+  </body>
+</html>
 
-// The page-side function we inject
-function toggleAutoRefresh() {
-  // Reuse the same code as content.js by dispatching a custom event
-  window.dispatchEvent(new CustomEvent("AR_TOGGLE_REQUEST"));
+popup.js
+
+async function send(cmd, data={}) {
+  const [tab] = await chrome.tabs.query({active: true, currentWindow: true});
+  if (!tab?.id) return;
+  return chrome.tabs.sendMessage(tab.id, {cmd, ...data});
 }
 
-content.js  (the actual refresher + HUD; auto-runs after reload if enabled)
+const minutesEl = document.getElementById('minutes');
+const statusEl  = document.getElementById('status');
 
-(function () {
-  const KEY_ENABLED = "_ar_enabled";
-  const KEY_MINUTES = "_ar_minutes";
+document.getElementById('set').onclick    = async ()=> { await send('setMinutes', {minutes: parseFloat(minutesEl.value)}); refresh(); };
+document.getElementById('start').onclick  = async ()=> { await send('start',      {minutes: parseFloat(minutesEl.value)}); refresh(); };
+document.getElementById('pause').onclick  = async ()=> { await send('pause');  refresh(); };
+document.getElementById('resume').onclick = async ()=> { await send('resume'); refresh(); };
+document.getElementById('stop').onclick   = async ()=> { await send('stop');   refresh(); };
+
+async function refresh(){
+  const s = await send('status');
+  if (s) {
+    minutesEl.value = s.minutes ?? minutesEl.value;
+    statusEl.textContent = `Status: ${s.state}${s.countdown ? ` • ${s.countdown}s left` : ''}`;
+  }
+}
+refresh();
+
+content.js
+
+(() => {
   const HUD_ID = "_arHUD";
-  let raf = 0;
-  let reloadTO = 0;
+  const STATE = {
+    // Per-tab session (survives reloads)
+    get enabled() { return sessionStorage.getItem("_ar_enabled")==="1"; },
+    set enabled(v){ v ? sessionStorage.setItem("_ar_enabled","1")
+                      : sessionStorage.removeItem("_ar_enabled"); },
 
-  // Start the auto-refresh HUD
-  function start(minutes) {
-    stop(); // clean any previous state
+    get paused()  { return sessionStorage.getItem("_ar_paused")==="1"; },
+    set paused(v) { v ? sessionStorage.setItem("_ar_paused","1")
+                      : sessionStorage.removeItem("_ar_paused"); },
 
-    // Persist state for this tab so it survives reloads
-    sessionStorage.setItem(KEY_ENABLED, "1");
-    sessionStorage.setItem(KEY_MINUTES, String(minutes));
+    get minutes() { return parseFloat(sessionStorage.getItem("_ar_minutes") || "2"); },
+    set minutes(m){ sessionStorage.setItem("_ar_minutes", String(m)); },
 
-    const hud = document.createElement("div");
-    hud.id = HUD_ID;
-    hud.style.cssText = [
-      "position:fixed",
-      "bottom:20px",
-      "right:20px",
-      "z-index:2147483647",
-      "padding:12px 16px",
-      "background:rgba(0,0,0,.85)",
-      "color:#fff",
-      "font:16px/1.2 system-ui",
-      "font-weight:700",
-      "border-radius:12px",
-      "border:1px solid #fff",
-      "box-shadow:0 6px 18px rgba(0,0,0,.6)",
-      "cursor:move",
-      "user-select:none",
-      "min-width:180px",
-      "text-align:center"
+    get nextAt()  { return parseInt(sessionStorage.getItem("_ar_nextAt") || "0", 10); },
+    set nextAt(t) { sessionStorage.setItem("_ar_nextAt", String(t)); }
+  };
+
+  let raf=0, reloadTO=0;
+  let hud=null, label=null, btnPause=null, btnStop=null;
+
+  function ensureHUD(){
+    if (document.getElementById(HUD_ID)) return document.getElementById(HUD_ID);
+    const box = document.createElement('div');
+    box.id = HUD_ID;
+    box.style.cssText = [
+      "position:fixed","bottom:20px","right:20px","z-index:2147483647",
+      "padding:10px 12px","background:rgba(0,0,0,.85)","color:#fff",
+      "font:14px/1.2 system-ui","border-radius:12px","border:1px solid #fff",
+      "box-shadow:0 6px 18px rgba(0,0,0,.6)","min-width:200px","user-select:none"
     ].join(";");
 
-    hud.title = "Drag to move. Click to stop.";
-    hud.textContent = "⟳ starting…";
-    document.body.appendChild(hud);
+    const top = document.createElement('div');
+    label = document.createElement('div');
+    label.style.cssText = "font-weight:700;margin-bottom:6px;text-align:center";
+    top.appendChild(label);
 
-    // Draggable
-    let dragging = false, ox = 0, oy = 0;
-    hud.addEventListener("pointerdown", (e) => {
-      dragging = true; ox = e.clientX - hud.offsetLeft; oy = e.clientY - hud.offsetTop;
-      hud.setPointerCapture(e.pointerId);
-    });
-    hud.addEventListener("pointermove", (e) => {
-      if (!dragging) return;
-      hud.style.left = (e.clientX - ox) + "px";
-      hud.style.top  = (e.clientY - oy) + "px";
-      hud.style.right = "auto";
-      hud.style.bottom = "auto";
-    });
-    hud.addEventListener("pointerup", () => dragging = false);
+    const ctrls = document.createElement('div');
+    ctrls.style.cssText = "display:flex;gap:6px;justify-content:center";
+    btnPause = Object.assign(document.createElement('button'), {textContent:"Pause"});
+    btnStop  = Object.assign(document.createElement('button'), {textContent:"Stop"});
+    for (const b of [btnPause, btnStop]) {
+      b.style.cssText = "padding:4px 8px;border-radius:8px;border:1px solid #ccc;background:#f5f5f5;cursor:pointer";
+    }
+    ctrls.append(btnPause, btnStop);
 
-    // Click to stop
-    hud.addEventListener("click", () => stop(true));
+    const hint = document.createElement('div');
+    hint.style.cssText = "margin-top:6px;opacity:.75;text-align:center";
+    hint.textContent = "Drag to move";
 
-    // Countdown using rAF (smooth + not throttled like setInterval on some sites)
-    let next = Date.now() + minutes * 60_000;
-    function tick() {
-      const left = next - Date.now();
-      if (left <= 0) {
-        next = Date.now() + minutes * 60_000;
-        location.reload();
-        return; // after reload, content.js will run again and auto-resume
-      }
-      hud.textContent = "⟳ Refresh in " + Math.ceil(left / 1000) + "s";
+    box.append(top, ctrls, hint);
+    document.body.appendChild(box);
+
+    // drag
+    let dragging=false, ox=0, oy=0;
+    box.addEventListener("pointerdown", e => { dragging=true; ox=e.clientX-box.offsetLeft; oy=e.clientY-box.offsetTop; box.setPointerCapture(e.pointerId); });
+    box.addEventListener("pointermove", e => { if(!dragging) return; box.style.left=(e.clientX-ox)+"px"; box.style.top=(e.clientY-oy)+"px"; box.style.right="auto"; box.style.bottom="auto"; });
+    box.addEventListener("pointerup", ()=> dragging=false);
+
+    // buttons
+    btnPause.onclick = () => STATE.paused ? resume() : pause();
+    btnStop.onclick  = () => stop(true);
+
+    return box;
+  }
+
+  function schedule() {
+    cancel(); // clear previous timers
+    if (!STATE.enabled || STATE.paused) return;
+    const ms = Math.max(50, STATE.minutes * 60_000);
+    const now = Date.now();
+    if (!STATE.nextAt || STATE.nextAt < now) STATE.nextAt = now + ms;
+
+    reloadTO = setTimeout(()=> location.reload(), STATE.nextAt - now);
+
+    const tick = () => {
+      if (!STATE.enabled) return cancel();
+      const left = Math.max(0, STATE.nextAt - Date.now());
+      if (hud) label.textContent = (STATE.paused ? "⏸ Paused"
+        : `⟳ Refresh in ${Math.ceil(left/1000)}s — ${STATE.minutes}m`);
       raf = requestAnimationFrame(tick);
-    }
+    };
     raf = requestAnimationFrame(tick);
-
-    // Absolute reload backup (in case rAF is throttled)
-    reloadTO = setTimeout(() => location.reload(), minutes * 60_000);
   }
 
-  // Stop and clean up
-  function stop(userInitiated = false) {
-    try { cancelAnimationFrame(raf); } catch {}
-    try { clearTimeout(reloadTO); } catch {}
-    raf = 0; reloadTO = 0;
+  function cancel(){
+    try{ cancelAnimationFrame(raf) }catch{}
+    try{ clearTimeout(reloadTO) }catch{}
+    raf=0; reloadTO=0;
+  }
+
+  function start(minutes){
+    if (Number.isFinite(minutes) && minutes>0) STATE.minutes = minutes;
+    STATE.enabled = true; STATE.paused = false;
+    hud = ensureHUD();
+    btnPause.textContent = "Pause";
+    schedule();
+    // visual nudge
+    if (hud) hud.style.outline = "2px solid #4caf50", setTimeout(()=>hud.style.outline="",400);
+  }
+
+  function pause(){
+    STATE.paused = true;
+    btnPause.textContent = "Resume";
+    cancel();
+    schedule();
+  }
+
+  function resume(){
+    STATE.paused = false;
+    btnPause.textContent = "Pause";
+    // push the nextAt forward from now
+    STATE.nextAt = Date.now() + STATE.minutes*60_000;
+    schedule();
+  }
+
+  function stop(user=false){
+    STATE.enabled = false; STATE.paused = false;
+    cancel();
     document.getElementById(HUD_ID)?.remove();
-    sessionStorage.removeItem(KEY_ENABLED);
-    sessionStorage.removeItem(KEY_MINUTES);
-    if (userInitiated) alert("⏸ Auto-refresh stopped");
+    if (user) alert("⏸ Auto-refresh stopped");
   }
 
-  // Toggle handler (called when you click the extension icon)
-  function toggle() {
-    if (sessionStorage.getItem(KEY_ENABLED) === "1") {
-      stop(true);
-    } else {
-      let m = parseFloat(prompt("Auto-refresh interval (minutes):", sessionStorage.getItem(KEY_MINUTES) || "2"));
-      if (!isFinite(m) || m <= 0) { alert("Please enter a positive number."); return; }
-      start(m);
-      alert("▶ Auto-refresh started: every " + m + " min.\n(Click the badge or the icon to stop.)");
+  // Messages from popup
+  chrome.runtime.onMessage.addListener((msg, _sender, sendResponse)=>{
+    const reply = (extra={}) => sendResponse({state: STATE.enabled ? (STATE.paused?"paused":"running") : "stopped",
+                                             minutes: STATE.minutes,
+                                             countdown: STATE.enabled && !STATE.paused ? Math.ceil(Math.max(0, STATE.nextAt - Date.now())/1000) : 0,
+                                             ...extra});
+    switch(msg.cmd){
+      case "start": start(msg.minutes ?? STATE.minutes); reply(); break;
+      case "pause": pause(); reply(); break;
+      case "resume": resume(); reply(); break;
+      case "stop":  stop(true); reply(); break;
+      case "setMinutes":
+        if (Number.isFinite(msg.minutes) && msg.minutes>0) {
+          STATE.minutes = msg.minutes;
+          STATE.nextAt  = Date.now() + STATE.minutes*60_000;
+          schedule();
+        }
+        reply();
+        break;
+      case "status": reply(); break;
     }
-  }
+    return true; // async
+  });
 
-  // Listen for toggle requests from bg.js
-  window.addEventListener("AR_TOGGLE_REQUEST", toggle);
-
-  // Auto-resume after reload if previously enabled in this tab
-  if (sessionStorage.getItem(KEY_ENABLED) === "1") {
-    const m = parseFloat(sessionStorage.getItem(KEY_MINUTES) || "2");
-    if (isFinite(m) && m > 0) start(m);
+  // Auto-resume after reload if enabled
+  if (STATE.enabled) {
+    hud = ensureHUD();
+    schedule();
   }
 })();
 
 
 ---
 
-2) Load the extension
+2) Load it
 
-1. Open chrome://extensions
-
-
-2. Turn on Developer mode (top right).
+1. Visit chrome://extensions
 
 
-3. Click Load unpacked → select the AutoRefreshHUD/ folder.
+2. Enable Developer mode (top right)
 
 
-4. You’ll see Auto Refresh HUD appear with a puzzle-piece toolbar icon.
+3. Click Load unpacked → select the AutoRefreshPro/ folder
 
 
 
@@ -175,36 +262,26 @@ content.js  (the actual refresher + HUD; auto-runs after reload if enabled)
 
 3) Use it
 
-Go to any page you want to auto-refresh.
+Click the extension icon to open the popup.
 
-Click the extension icon (toolbar).
+Set Minutes, then Start.
 
-You’ll be asked for the minutes.
+Use Pause / Resume / Stop any time.
 
-A large countdown badge appears.
+A draggable HUD appears on the page showing the countdown and a Pause/Stop pair.
 
-The page will reload when it hits zero, and it will auto-resume after reload.
-
-
-To stop, either:
-
-Click the badge, or
-
-Click the extension icon again.
-
+It persists across reloads in that tab.
 
 
 
 ---
 
-Why this will work for you
+Notes
 
-Runs as an extension content script, so page CSP and bookmarklet restrictions don’t apply.
+Everything is per-tab (uses sessionStorage), so different tabs can have different timers.
 
-Uses requestAnimationFrame + a backup setTimeout for reliability.
+For a quick test, set minutes to 0.05 (~3 seconds).
 
-Persists per tab using sessionStorage, so it keeps running across reloads.
+If your Chrome is policy-locked from loading unpacked extensions, tell me—I’ll give you a Tampermonkey userscript version with the same controls.
 
-
-If your Chrome is policy-locked and won’t allow “Developer mode” or loading an unpacked extension, tell me and I’ll give you a one-file userscript for Tampermonkey (if you can install that), or a PowerShell command to launch Chrome with a simple command-line auto-refresh workaround.
 
