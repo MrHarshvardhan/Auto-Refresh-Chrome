@@ -1,0 +1,210 @@
+
+---
+
+1) Create the extension files
+
+Make a new folder anywhere (e.g., AutoRefreshHUD/) and put these files inside:
+
+manifest.json
+
+{
+  "manifest_version": 3,
+  "name": "Auto Refresh HUD",
+  "version": "1.0",
+  "description": "Auto-refresh the current tab with a visible countdown badge. Click the icon to start/stop.",
+  "permissions": ["scripting", "activeTab", "storage"],
+  "action": { "default_title": "Auto Refresh HUD (click to start/stop)" },
+  "background": { "service_worker": "bg.js" },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}
+
+bg.js  (injects/starts the refresher when you click the toolbar icon)
+
+// Injects the toggle function into the current tab when the extension icon is clicked.
+chrome.action.onClicked.addListener(async (tab) => {
+  if (!tab.id) return;
+  await chrome.scripting.executeScript({
+    target: { tabId: tab.id },
+    func: toggleAutoRefresh
+  });
+});
+
+// The page-side function we inject
+function toggleAutoRefresh() {
+  // Reuse the same code as content.js by dispatching a custom event
+  window.dispatchEvent(new CustomEvent("AR_TOGGLE_REQUEST"));
+}
+
+content.js  (the actual refresher + HUD; auto-runs after reload if enabled)
+
+(function () {
+  const KEY_ENABLED = "_ar_enabled";
+  const KEY_MINUTES = "_ar_minutes";
+  const HUD_ID = "_arHUD";
+  let raf = 0;
+  let reloadTO = 0;
+
+  // Start the auto-refresh HUD
+  function start(minutes) {
+    stop(); // clean any previous state
+
+    // Persist state for this tab so it survives reloads
+    sessionStorage.setItem(KEY_ENABLED, "1");
+    sessionStorage.setItem(KEY_MINUTES, String(minutes));
+
+    const hud = document.createElement("div");
+    hud.id = HUD_ID;
+    hud.style.cssText = [
+      "position:fixed",
+      "bottom:20px",
+      "right:20px",
+      "z-index:2147483647",
+      "padding:12px 16px",
+      "background:rgba(0,0,0,.85)",
+      "color:#fff",
+      "font:16px/1.2 system-ui",
+      "font-weight:700",
+      "border-radius:12px",
+      "border:1px solid #fff",
+      "box-shadow:0 6px 18px rgba(0,0,0,.6)",
+      "cursor:move",
+      "user-select:none",
+      "min-width:180px",
+      "text-align:center"
+    ].join(";");
+
+    hud.title = "Drag to move. Click to stop.";
+    hud.textContent = "⟳ starting…";
+    document.body.appendChild(hud);
+
+    // Draggable
+    let dragging = false, ox = 0, oy = 0;
+    hud.addEventListener("pointerdown", (e) => {
+      dragging = true; ox = e.clientX - hud.offsetLeft; oy = e.clientY - hud.offsetTop;
+      hud.setPointerCapture(e.pointerId);
+    });
+    hud.addEventListener("pointermove", (e) => {
+      if (!dragging) return;
+      hud.style.left = (e.clientX - ox) + "px";
+      hud.style.top  = (e.clientY - oy) + "px";
+      hud.style.right = "auto";
+      hud.style.bottom = "auto";
+    });
+    hud.addEventListener("pointerup", () => dragging = false);
+
+    // Click to stop
+    hud.addEventListener("click", () => stop(true));
+
+    // Countdown using rAF (smooth + not throttled like setInterval on some sites)
+    let next = Date.now() + minutes * 60_000;
+    function tick() {
+      const left = next - Date.now();
+      if (left <= 0) {
+        next = Date.now() + minutes * 60_000;
+        location.reload();
+        return; // after reload, content.js will run again and auto-resume
+      }
+      hud.textContent = "⟳ Refresh in " + Math.ceil(left / 1000) + "s";
+      raf = requestAnimationFrame(tick);
+    }
+    raf = requestAnimationFrame(tick);
+
+    // Absolute reload backup (in case rAF is throttled)
+    reloadTO = setTimeout(() => location.reload(), minutes * 60_000);
+  }
+
+  // Stop and clean up
+  function stop(userInitiated = false) {
+    try { cancelAnimationFrame(raf); } catch {}
+    try { clearTimeout(reloadTO); } catch {}
+    raf = 0; reloadTO = 0;
+    document.getElementById(HUD_ID)?.remove();
+    sessionStorage.removeItem(KEY_ENABLED);
+    sessionStorage.removeItem(KEY_MINUTES);
+    if (userInitiated) alert("⏸ Auto-refresh stopped");
+  }
+
+  // Toggle handler (called when you click the extension icon)
+  function toggle() {
+    if (sessionStorage.getItem(KEY_ENABLED) === "1") {
+      stop(true);
+    } else {
+      let m = parseFloat(prompt("Auto-refresh interval (minutes):", sessionStorage.getItem(KEY_MINUTES) || "2"));
+      if (!isFinite(m) || m <= 0) { alert("Please enter a positive number."); return; }
+      start(m);
+      alert("▶ Auto-refresh started: every " + m + " min.\n(Click the badge or the icon to stop.)");
+    }
+  }
+
+  // Listen for toggle requests from bg.js
+  window.addEventListener("AR_TOGGLE_REQUEST", toggle);
+
+  // Auto-resume after reload if previously enabled in this tab
+  if (sessionStorage.getItem(KEY_ENABLED) === "1") {
+    const m = parseFloat(sessionStorage.getItem(KEY_MINUTES) || "2");
+    if (isFinite(m) && m > 0) start(m);
+  }
+})();
+
+
+---
+
+2) Load the extension
+
+1. Open chrome://extensions
+
+
+2. Turn on Developer mode (top right).
+
+
+3. Click Load unpacked → select the AutoRefreshHUD/ folder.
+
+
+4. You’ll see Auto Refresh HUD appear with a puzzle-piece toolbar icon.
+
+
+
+
+---
+
+3) Use it
+
+Go to any page you want to auto-refresh.
+
+Click the extension icon (toolbar).
+
+You’ll be asked for the minutes.
+
+A large countdown badge appears.
+
+The page will reload when it hits zero, and it will auto-resume after reload.
+
+
+To stop, either:
+
+Click the badge, or
+
+Click the extension icon again.
+
+
+
+
+---
+
+Why this will work for you
+
+Runs as an extension content script, so page CSP and bookmarklet restrictions don’t apply.
+
+Uses requestAnimationFrame + a backup setTimeout for reliability.
+
+Persists per tab using sessionStorage, so it keeps running across reloads.
+
+
+If your Chrome is policy-locked and won’t allow “Developer mode” or loading an unpacked extension, tell me and I’ll give you a one-file userscript for Tampermonkey (if you can install that), or a PowerShell command to launch Chrome with a simple command-line auto-refresh workaround.
+
